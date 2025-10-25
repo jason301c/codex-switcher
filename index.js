@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
-import { program } from "commander";
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import os from "os";
 import chalk from "chalk";
-import readline from "readline/promises";
-import { renderExecutionBanner, renderAccountList } from "./cli_ui.js";
+import inquirer from "inquirer";
+import {
+  clearScreen,
+  renderDashboard,
+  renderExecutionBanner,
+} from "./cli_ui.js";
 
 // --- Configuration and Utilities ---
 
@@ -134,271 +137,214 @@ function runCodex(args) {
   });
 }
 
-// --- Commands Definition ---
+// --- TUI Implementation (interactive menu using inquirer) ---
 
-program
-  .version("1.0.0")
-  .description("Codex Account Context Switcher (CLI Wrapper)")
-  .allowUnknownOption(true)
-  .allowExcessArguments(true);
+async function promptMainMenu() {
+  const choices = [
+    { name: "Use / activate a profile", value: "use" },
+    { name: "Add a new profile", value: "add" },
+    { name: "Delete a profile", value: "delete" },
+    { name: "Rename a profile", value: "rename" },
+    { name: "Launch Codex TUI for active profile", value: "launch" },
+    { name: "Exit", value: "exit" },
+  ];
 
-// Update known subcommands list. Include 'help' so that 'ccx help' is handled by
-// commander (the wrapper) instead of being passed through to the real codex
-// binary.
-const knownSubcommands = ["use", "list", "add", "delete", "rename", "help"];
-
-// Command: ccx use <name>
-program
-  .command("use <name>")
-  .description(
-    "Switch to a specific Codex account context and optionally launch Codex TUI"
-  )
-  .action(async (name) => {
-    const config = loadConfig();
-    if (!config.accounts[name]) {
-      console.error(chalk.red(`Error: Account '${name}' does not exist.`));
-      process.exit(1);
-    }
-
-    const oldActive = config.active;
-    config.active = name;
-    saveConfig(config);
-
-    console.log(
-      chalk.green(
-        `Switched active account from '${oldActive || "[none]"}' to '${name}'.`
-      )
-    );
-
-    const authStatus = getAuthStatus(config.accounts[name]);
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    if (authStatus === "Unauthenticated") {
-      console.log(
-        chalk.yellow(
-          `\nWarning: Profile '${name}' is currently unauthenticated.`
-        )
-      );
-      console.log(
-        `Run ${chalk.cyan("ccx login chatgpt")} or ${chalk.cyan(
-          "ccx login --with-api-key"
-        )} inside this context to authenticate.`
-      );
-    }
-
-    const answer = await rl.question(
-      chalk.cyan(`\nLaunch Codex TUI now? (Y/n): `)
-    );
-    rl.close();
-
-    if (answer.toLowerCase() !== "n") {
-      console.error(
-        chalk.dim("\nLaunching Codex TUI... (Ctrl+C to quit the session)")
-      );
-      runCodex([]);
-    } else {
-      process.exit(0);
-    }
+  const ans = await inquirer.prompt({
+    type: "list",
+    name: "choice",
+    message: chalk.cyan("What would you like to do?"),
+    choices,
+    loop: false,
+    pageSize: choices.length,
   });
 
-// Command: ccx list
-program
-  .command("list")
-  .description("List all configured accounts and their status")
-  .action(() => {
-    const config = loadConfig();
-    renderAccountList(config, getAuthStatus);
-  });
-
-// Command: ccx add <name>
-program
-  .command("add <name>")
-  .description("Add a new account context (creates a new CODEX_HOME directory)")
-  .option("-f, --force", "Overwrite existing account name if it exists")
-  .action((name, options) => {
-    const config = loadConfig();
-    const accountPath = path.join(ACCOUNTS_ROOT, name);
-
-    if (config.accounts[name] && !options.force) {
-      console.error(
-        chalk.red(
-          `Error: Account '${name}' already exists at ${accountPath}. Use -f to overwrite.`
-        )
-      );
-      process.exit(1);
-    }
-
-    fs.mkdirSync(accountPath, { recursive: true });
-
-    config.accounts[name] = accountPath;
-    const wasActive = config.active;
-    config.active = name;
-    saveConfig(config);
-
-    console.log(chalk.green(`\nAccount '${name}' added and set as active.`));
-    if (wasActive) {
-      console.log(chalk.dim(`(Previous active account: ${wasActive})`));
-    }
-
-    console.log(
-      chalk.yellow(
-        `\nNext step: Run ${chalk.cyan(
-          "ccx login"
-        )} to authenticate this new context.`
-      )
-    );
-  });
-
-// Command: ccx delete <name>
-program
-  .command("delete <name>")
-  .description("Delete a profile and its associated configuration directory")
-  .option("-y, --yes", "Skip confirmation prompt")
-  .action(async (name, options) => {
-    const config = loadConfig();
-    if (!config.accounts[name]) {
-      console.error(chalk.red(`Error: Account '${name}' does not exist.`));
-      process.exit(1);
-    }
-
-    const accountPath = config.accounts[name];
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    if (!options.yes) {
-      const answer = await rl.question(
-        chalk.red.bold(
-          `\nWARNING: This will permanently delete profile '${name}' and its directory (${accountPath}). Continue? (y/N): `
-        )
-      );
-      rl.close();
-
-      if (answer.toLowerCase() !== "y") {
-        console.log(chalk.yellow("Deletion cancelled."));
-        process.exit(0);
-      }
-    } else {
-      rl.close();
-    }
-
-    // 1. Remove the directory
-    try {
-      fs.rmSync(accountPath, { recursive: true, force: true });
-      delete config.accounts[name];
-      console.log(
-        chalk.green(
-          `Successfully deleted configuration directory: ${accountPath}`
-        )
-      );
-    } catch (e) {
-      console.error(chalk.red(`Error deleting directory: ${e.message}`));
-      process.exit(1);
-    }
-
-    // 2. Update active profile if the deleted one was active
-    if (config.active === name) {
-      config.active = null;
-      console.log(chalk.yellow(`Deactivated profile '${name}'.`));
-
-      const remainingNames = Object.keys(config.accounts);
-      if (remainingNames.length > 0) {
-        // Auto-select the first available profile as the new active one
-        config.active = remainingNames[0];
-        console.log(
-          chalk.green(
-            `Automatically set '${config.active}' as the new active profile.`
-          )
-        );
-      }
-    }
-
-    saveConfig(config);
-    console.log(chalk.green(`Profile '${name}' successfully removed.`));
-    process.exit(0);
-  });
-
-// Command: ccx rename <oldName> <newName>
-program
-  .command("rename <oldName> <newName>")
-  .description("Rename an existing profile")
-  .action((oldName, newName) => {
-    const config = loadConfig();
-
-    if (!config.accounts[oldName]) {
-      console.error(chalk.red(`Error: Profile '${oldName}' does not exist.`));
-      process.exit(1);
-    }
-    if (config.accounts[newName]) {
-      console.error(
-        chalk.red(`Error: Profile '${newName}' already exists. Cannot rename.`)
-      );
-      process.exit(1);
-    }
-
-    const oldPath = config.accounts[oldName];
-    const newPath = path.join(ACCOUNTS_ROOT, newName);
-
-    // 1. Rename the physical directory
-    try {
-      fs.renameSync(oldPath, newPath);
-    } catch (e) {
-      console.error(
-        chalk.red(
-          `Error renaming directory from ${oldName} to ${newName}: ${e.message}`
-        )
-      );
-      process.exit(1);
-    }
-
-    // 2. Update the config mapping
-    delete config.accounts[oldName];
-    config.accounts[newName] = newPath;
-
-    // 3. Update active profile pointer if necessary
-    if (config.active === oldName) {
-      config.active = newName;
-    }
-
-    saveConfig(config);
-    console.log(
-      chalk.green(
-        `Profile successfully renamed from '${oldName}' to '${newName}'.`
-      )
-    );
-    process.exit(0);
-  });
-
-// --- Passthrough Logic ---
-
-const userArgs = process.argv.slice(2);
-const firstArg = userArgs[0];
-
-if (firstArg && !knownSubcommands.includes(firstArg)) {
-  // Passthrough command (e.g., ccx login chatgpt, ccx exec, ccx sandbox)
-  runCodex(userArgs);
-} else {
-  program.parse(process.argv);
+  return ans.choice;
 }
 
-// Handle the case where the user runs 'ccx' with no arguments
-if (userArgs.length === 0) {
+async function chooseProfile(promptMessage) {
   const config = loadConfig();
-  if (config.active && config.accounts[config.active]) {
-    // If an account is active, run the default 'codex' command (TUI)
-    console.error(chalk.dim("\nLaunching Codex TUI for active account..."));
-    runCodex([]);
-  } else {
-    // If no active account, show wrapper help
+  const names = Object.keys(config.accounts).sort();
+  if (names.length === 0) {
     console.log(
-      chalk.bold.yellow(
-        "No active account. Please use 'ccx list' or 'ccx add <name>'."
-      )
+      chalk.yellow("No profiles exist. Use 'Add a new profile' first.")
     );
-    program.help({ error: true });
+    return null;
   }
+
+  const ans = await inquirer.prompt({
+    type: "list",
+    name: "name",
+    message: promptMessage,
+    choices: [
+      ...names,
+      new inquirer.Separator(),
+      { name: "Cancel", value: null },
+    ],
+  });
+  return ans.name;
+}
+
+async function promptForName(message, defaultVal = "") {
+  const ans = await inquirer.prompt({
+    type: "input",
+    name: "value",
+    message,
+    default: defaultVal,
+    validate: (v) =>
+      v && v.trim().length > 0 ? true : "Please provide a name.",
+  });
+  return ans.value.trim();
+}
+
+async function doAdd() {
+  const name = await promptForName("New profile name:");
+  const config = loadConfig();
+  const accountPath = path.join(ACCOUNTS_ROOT, name);
+  if (config.accounts[name]) {
+    const overwrite = await inquirer.prompt({
+      type: "confirm",
+      name: "ok",
+      message: `Profile '${name}' already exists. Overwrite?`,
+      default: false,
+    });
+    if (!overwrite.ok) return chalk.dim("Add cancelled.");
+  }
+
+  fs.mkdirSync(accountPath, { recursive: true });
+  config.accounts[name] = accountPath;
+  const prev = config.active;
+  config.active = name;
+  saveConfig(config);
+  return `${chalk.green(
+    `Added '${name}' and set as active. (Previous: ${prev || "none"})`
+  )} ${chalk.dim("Next: run login inside the context or launch Codex TUI.")}`;
+}
+
+async function doUse() {
+  const name = await chooseProfile("Select profile to activate:");
+  if (!name) return chalk.dim("Activation cancelled.");
+  const config = loadConfig();
+  config.active = name;
+  saveConfig(config);
+  return chalk.green(`Activated '${name}'.`);
+}
+
+async function doDelete() {
+  const name = await chooseProfile("Select profile to delete:");
+  if (!name) return chalk.dim("Deletion cancelled.");
+  const config = loadConfig();
+  const accountPath = config.accounts[name];
+  const confirm = await inquirer.prompt({
+    type: "confirm",
+    name: "ok",
+    message: `Permanently delete '${name}' and its directory (${accountPath})?`,
+    default: false,
+  });
+  if (!confirm.ok) return chalk.dim("Deletion cancelled.");
+
+  try {
+    fs.rmSync(accountPath, { recursive: true, force: true });
+    delete config.accounts[name];
+    if (config.active === name) config.active = null;
+    // auto-select another if available
+    const remaining = Object.keys(config.accounts);
+    if (!config.active && remaining.length > 0) config.active = remaining[0];
+    saveConfig(config);
+    return chalk.green(`Deleted '${name}'.`);
+  } catch (e) {
+    return chalk.red(`Failed to delete '${name}': ${e.message}`);
+  }
+}
+
+async function doRename() {
+  const oldName = await chooseProfile("Select profile to rename:");
+  if (!oldName) return chalk.dim("Rename cancelled.");
+  const newName = await promptForName("New name for profile:", oldName);
+  if (newName === oldName) {
+    return chalk.yellow("Name unchanged.");
+  }
+  const config = loadConfig();
+  if (config.accounts[newName]) {
+    return chalk.red(`A profile named '${newName}' already exists.`);
+  }
+  const oldPath = config.accounts[oldName];
+  const newPath = path.join(ACCOUNTS_ROOT, newName);
+  try {
+    fs.renameSync(oldPath, newPath);
+  } catch (e) {
+    return chalk.red(`Failed to rename directory: ${e.message}`);
+  }
+  delete config.accounts[oldName];
+  config.accounts[newName] = newPath;
+  if (config.active === oldName) config.active = newName;
+  saveConfig(config);
+  return chalk.green(`Renamed '${oldName}' → '${newName}'.`);
+}
+
+async function doLaunch() {
+  const config = loadConfig();
+  if (!config.active || !config.accounts[config.active]) {
+    return chalk.yellow("No active profile. Activate one first.");
+  }
+  console.error(chalk.dim("\nLaunching Codex TUI... (Ctrl+C to quit)"));
+  runCodex([]);
+}
+
+async function mainTuiLoop() {
+  let lastActionMessage = null;
+  while (true) {
+    const latestConfig = loadConfig();
+    renderDashboard(latestConfig, getAuthStatus, {
+      lastAction: lastActionMessage,
+    });
+    lastActionMessage = null;
+
+    const choice = await promptMainMenu();
+    switch (choice) {
+      case "add":
+        lastActionMessage = await doAdd();
+        break;
+      case "use":
+        lastActionMessage = await doUse();
+        break;
+      case "delete":
+        lastActionMessage = await doDelete();
+        break;
+      case "rename":
+        lastActionMessage = await doRename();
+        break;
+      case "launch":
+        lastActionMessage = await doLaunch();
+        if (!lastActionMessage) {
+          return; // launching codex replaces process
+        }
+        break;
+      case "exit":
+      default:
+        clearScreen();
+        console.log(chalk.dim("Goodbye."));
+        return;
+    }
+
+    // brief pause for readability
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+// --- Entry point: passthrough when args supplied, else show TUI ---
+
+const userArgs = process.argv.slice(2);
+if (userArgs.length > 0) {
+  // simply passthrough to the original codex binary
+  runCodex(userArgs);
+} else {
+  // Launch interactive TUI
+  (async () => {
+    try {
+      await mainTuiLoop();
+    } catch (e) {
+      console.error(chalk.red(`Fatal error: ${e.message}`));
+      process.exit(1);
+    }
+  })();
 }

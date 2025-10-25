@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import os from "os";
 import path from "path";
 
 /**
@@ -76,63 +77,149 @@ export function renderExecutionBanner(name, status, codexHomePath) {
   console.error(chalk.magenta.bold("└" + border + "┘"));
 }
 
-/**
- * Renders the list of configured accounts with clear indicators.
- * @param {object} config - The accounts configuration object.
- * @param {function} getAuthStatus - Function to get the colorized auth status.
- */
-export function renderAccountList(config, getAuthStatus) {
-  const names = Object.keys(config.accounts).sort();
+const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-  console.log(`\n${chalk.white.bold.bgBlue(" CODEX ACCOUNT PROFILES ")}`);
-  console.log(chalk.blue("────────────────────────"));
-
-  if (names.length === 0) {
-    console.log(
-      chalk.yellow("No accounts configured. Use ") +
-        chalk.cyan.bold("ccx add <name>") +
-        chalk.yellow(" to begin.")
-    );
-    return;
+function padEnd(input, width) {
+  const visibleLen = stripAnsi(input).length;
+  if (visibleLen >= width) {
+    return input;
   }
+  return input + " ".repeat(width - visibleLen);
+}
 
-  names.forEach((name) => {
-    const isActive = name === config.active;
-    const accountPath = config.accounts[name];
-    const authStatus = getAuthStatus(accountPath);
+function formatStatus(status) {
+  if (status.includes("Authenticated")) {
+    return chalk.black.bgGreen(` ${status} `);
+  }
+  return chalk.black.bgYellow(` ${status} `);
+}
 
-    // Indicator for active profile
-    const marker = isActive ? chalk.green.bold("➤ ") : chalk.gray("  ");
+function toTildePath(fullPath) {
+  const home = os.homedir();
+  if (fullPath.startsWith(home)) {
+    return `~${fullPath.slice(home.length)}`;
+  }
+  return fullPath;
+}
 
-    // Profile Name and Status
-    const statusIcon = authStatus.includes("Authenticated")
-      ? chalk.green("✔")
-      : chalk.yellow("⚠");
+function drawSectionTitle(label, width) {
+  const title = ` ${label.toUpperCase()} `;
+  const lineWidth = Math.max(width - stripAnsi(title).length - 1, 0);
+  return chalk.gray(title + "─".repeat(lineWidth));
+}
 
+export function clearScreen() {
+  process.stdout.write("\x1b[2J\x1b[0;0H");
+}
+
+export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
+  const width = Math.min(Math.max(process.stdout.columns || 80, 70), 110);
+  const headerWidth = width - 2;
+  const bannerLabel = chalk.white.bold(" Codex Switcher ");
+  const bannerPad = Math.max(0, headerWidth - stripAnsi(bannerLabel).length);
+
+  clearScreen();
+
+  console.log(
+    chalk.bgMagenta.black("┏" + "━".repeat(headerWidth) + "┓")
+  );
+  console.log(
+    chalk.bgMagenta.black(
+      "┃" + bannerLabel + " ".repeat(bannerPad) + "┃"
+    )
+  );
+  console.log(
+    chalk.bgMagenta.black("┗" + "━".repeat(headerWidth) + "┛")
+  );
+
+  const activeName = config.active;
+  const activePath = activeName ? config.accounts[activeName] : null;
+  const activeStatus =
+    activeName && activePath ? getAuthStatus(activePath) : "No profile";
+
+  console.log(drawSectionTitle("Active Profile", width));
+
+  if (activeName && activePath) {
     console.log(
-      `${marker}${statusIcon} ${chalk.cyan.bold(name)} ${chalk.white(
-        `[${authStatus}]`
+      `${chalk.green("➤")} ${chalk.cyan.bold(activeName)}  ${formatStatus(
+        activeStatus
       )}`
     );
-
-    // Detailed path underneath
-    console.log(
-      `    ${chalk.dim("Path:")} ${chalk.dim(path.basename(accountPath))}/`
-    );
-
-    // Separator unless last item
-    if (names.indexOf(name) < names.length - 1) {
-      console.log(chalk.gray("    —"));
-    }
-  });
-
-  if (!config.active) {
-    console.log(
-      chalk.red('\nNo profile is currently active. Use "ccx use <name>".')
-    );
-  } else if (config.active && !config.accounts[config.active]) {
-    console.log(
-      chalk.red("\nError: Active profile directory appears missing.")
-    );
+    console.log(`   ${chalk.dim(toTildePath(activePath))}`);
+  } else {
+    console.log(chalk.yellow("No active profile. Use 'Use profile' to select."));
   }
+
+  if (lastAction) {
+    console.log("");
+    const formatted =
+      typeof lastAction === "string" ? lastAction.trim() : lastAction;
+    console.log(`${chalk.dim("Last action:")} ${formatted}`);
+  }
+
+  console.log("");
+  console.log(drawSectionTitle("Profiles", width));
+
+  const accountNames = Object.keys(config.accounts).sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  if (accountNames.length === 0) {
+    console.log(
+      chalk.yellow(
+        "No profiles configured. Choose 'Add profile' to get started."
+      )
+    );
+  } else {
+    const rows = accountNames.map((name, idx) => {
+      const accountPath = config.accounts[name];
+      const status = getAuthStatus(accountPath);
+      return {
+        index: idx + 1,
+        name,
+        status,
+        path: toTildePath(accountPath),
+        isActive: name === activeName,
+      };
+    });
+
+    const indexWidth = String(rows.length).length + 2;
+    const nameWidth = Math.max(
+      ...rows.map((row) => stripAnsi(row.name).length),
+      8
+    );
+    const statusWidth = Math.max(
+      ...rows.map((row) => stripAnsi(formatStatus(row.status)).length),
+      13
+    );
+
+    const baseHeader =
+      padEnd(chalk.dim("#"), indexWidth) +
+      padEnd(chalk.dim("Profile"), nameWidth + 4) +
+      padEnd(chalk.dim("Status"), statusWidth + 2) +
+      chalk.dim("Location");
+
+    console.log(baseHeader);
+    console.log(chalk.gray("-".repeat(width - 4)));
+
+    rows.forEach((row) => {
+      const marker = row.isActive ? chalk.green("★") : " ";
+      const indexCell = padEnd(`${marker} ${row.index}`, indexWidth);
+      const nameCell = padEnd(
+        row.isActive ? chalk.white.bold(row.name) : chalk.white(row.name),
+        nameWidth + 4
+      );
+      const statusCell = padEnd(formatStatus(row.status), statusWidth + 2);
+      console.log(`${indexCell}${nameCell}${statusCell}${chalk.dim(row.path)}`);
+    });
+  }
+
+  console.log("");
+  console.log(drawSectionTitle("Shortcuts", width));
+  console.log(
+    `${chalk.dim("↵")} Confirm  ${chalk.dim("↑/↓")} Navigate  ${chalk.dim("Esc")} Cancel`
+  );
+  console.log(
+    chalk.dim("Press Ctrl+C at any time to quit or use the menu to exit.")
+  );
 }
