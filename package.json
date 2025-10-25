@@ -7,15 +7,22 @@
   },
   "type": "module",
   "bin": {
-    "ccx": "./index.js"
+    "ccx": "index.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jason301c/codex-switcher.git"
   },
-  "keywords": [],
+  "keywords": [
+    "chatgpt",
+    "codex",
+    "account switcher",
+    "account",
+    "openai",
+    "tui"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "CC-BY-NC-4.0",
   "bugs": {
     "url": "https://github.com/jason301c/codex-switcher/issues"
   },
