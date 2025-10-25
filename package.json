@@ -1,0 +1,28 @@
+{
+  "name": "codex-switcher",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "type": "module",
+  "bin": {
+    "ccx": "./index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jason301c/codex-switcher.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jason301c/codex-switcher/issues"
+  },
+  "homepage": "https://github.com/jason301c/codex-switcher#readme",
+  "description": "",
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "commander": "^14.0.1"
+  }
+}
