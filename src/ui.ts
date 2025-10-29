@@ -1,6 +1,10 @@
 import chalk from "chalk";
 import os from "os";
-import type { UsageEntry, UsageSummary, UsageSummaryOrMessage } from "./usage.js";
+import type {
+  UsageEntry,
+  UsageSummary,
+  UsageSummaryOrMessage,
+} from "./usage.js";
 
 type AuthStatus = "Authenticated" | "Unauthenticated";
 type ActiveAuthStatus = AuthStatus | "No profile";
@@ -8,7 +12,8 @@ type RateLimitWindow = UsageSummary["rateLimit"]["primary"];
 type CreditsSummary = UsageSummary["credits"];
 
 const STRIP_ANSI_REGEX = /\x1b\[[0-9;]*m/g;
-const stripAnsi = (value: string): string => value.replace(STRIP_ANSI_REGEX, "");
+const stripAnsi = (value: string): string =>
+  value.replace(STRIP_ANSI_REGEX, "");
 
 const formatDuration = (seconds?: number | null): string | null => {
   if (seconds === undefined || seconds === null) {
@@ -45,7 +50,10 @@ const formatDuration = (seconds?: number | null): string | null => {
   return parts.join(" ");
 };
 
-const formatRateWindow = (label: string, windowData: RateLimitWindow): string | null => {
+const formatRateWindow = (
+  label: string,
+  windowData: RateLimitWindow
+): string | null => {
   if (!windowData) {
     return null;
   }
@@ -84,7 +92,9 @@ const formatCredits = (credits: CreditsSummary): string | null => {
   return `${chalk.dim("  Credits:")} ${chalk.white(segments.join(" · "))}`;
 };
 
-const formatAgeLabel = (entry: UsageEntry & { ageMs: number; stale: boolean }): string | null => {
+const formatAgeLabel = (
+  entry: UsageEntry & { ageMs: number; stale: boolean }
+): string | null => {
   const seconds = entry.ageMs / 1000;
   const formatted = formatDuration(seconds);
   return formatted ? `cached ${formatted} ago` : null;
@@ -102,7 +112,8 @@ const buildUsageLines = (
   if (agePart) {
     metaParts.push(chalk.dim(agePart));
   }
-  const metaSuffix = metaParts.length > 0 ? ` ${chalk.dim(`(${metaParts.join(", ")})`)}` : "";
+  const metaSuffix =
+    metaParts.length > 0 ? ` ${chalk.dim(`(${metaParts.join(", ")})`)}` : "";
 
   if (!summary) {
     return metaParts.length > 0
@@ -114,7 +125,9 @@ const buildUsageLines = (
     const label =
       summary.status === "error" ? chalk.red("Usage:") : chalk.yellow("Usage:");
     const fallback =
-      summary.status === "error" ? "Unable to retrieve usage." : "Usage unavailable.";
+      summary.status === "error"
+        ? "Unable to retrieve usage."
+        : "Usage unavailable.";
     return [`${label} ${chalk.dim(summary.message || fallback)}${metaSuffix}`];
   }
 
@@ -148,7 +161,10 @@ const buildUsageLines = (
     lines.push(primaryLine);
   }
 
-  const secondaryLine = formatRateWindow("Secondary", okSummary.rateLimit.secondary);
+  const secondaryLine = formatRateWindow(
+    "Secondary",
+    okSummary.rateLimit.secondary
+  );
   if (secondaryLine) {
     lines.push(secondaryLine);
   }
@@ -178,7 +194,9 @@ const formatStatus = (status: AuthStatus): string => {
 
 const toTildePath = (fullPath: string): string => {
   const home = os.homedir();
-  return fullPath.startsWith(home) ? `~${fullPath.slice(home.length)}` : fullPath;
+  return fullPath.startsWith(home)
+    ? `~${fullPath.slice(home.length)}`
+    : fullPath;
 };
 
 const drawSectionTitle = (label: string, width: number): string => {
@@ -199,32 +217,38 @@ export function renderExecutionBanner(
 ): void {
   const padding = "  ";
   const title = chalk.white.bold("CODEX ACCOUNT MANAGER");
-  const nameLine = `${chalk.cyan.bold("Profile:")}${padding}${chalk.white(name)}`;
+  const nameLine = `${chalk.cyan.bold("Profile:")}${padding}${chalk.white(
+    name
+  )}`;
   const statusText =
-    status === "Authenticated" ? chalk.bgGreen.black(` ${status} `) : chalk.bgYellow.black(` ${status} `);
+    status === "Authenticated"
+      ? chalk.bgGreen.black(` ${status} `)
+      : chalk.bgYellow.black(` ${status} `);
   const statusLine = `${chalk.cyan.bold("Status:")}${padding}${statusText}`;
   const pathLine = `${chalk.dim("Path:")}${padding}${chalk.dim(codexHomePath)}`;
 
   const usageLines = buildUsageLines(usageEntry);
   const bodyLines = [nameLine, statusLine, pathLine, ...usageLines];
 
-  const visibleLengths = [title, ...bodyLines].map((line) => stripAnsi(line).length);
+  const visibleLengths = [title, ...bodyLines].map(
+    (line) => stripAnsi(line).length
+  );
   const maxVisible = Math.max(...visibleLengths, 0);
   const minWidth = 50;
   const boxWidth = Math.max(minWidth, maxVisible + 6);
   const border = chalk.magenta("─".repeat(boxWidth - 2));
 
-  console.error(chalk.magenta.bold(`\n┌${border}┐`));
+  console.log(chalk.magenta.bold(`\n┌${border}┐`));
   const titlePadding = Math.max(0, boxWidth - stripAnsi(title).length - 3);
-  console.error(chalk.magenta.bold(`│ ${title}${" ".repeat(titlePadding)} │`));
-  console.error(chalk.magenta.bold(`├${border}┤`));
+  console.log(chalk.magenta.bold(`│ ${title}${" ".repeat(titlePadding)} │`));
+  console.log(chalk.magenta.bold(`├${border}┤`));
 
   for (const line of bodyLines) {
     const padCount = Math.max(0, boxWidth - stripAnsi(line).length - 3);
-    console.error(chalk.magenta.bold(`│ ${line}${" ".repeat(padCount)} │`));
+    console.log(chalk.magenta.bold(`│ ${line}${" ".repeat(padCount)} │`));
   }
 
-  console.error(chalk.magenta.bold(`└${border}┘`));
+  console.log(chalk.magenta.bold(`└${border}┘`));
 }
 
 export function renderDashboard(params: {
@@ -234,10 +258,14 @@ export function renderDashboard(params: {
   };
   activeStatus: ActiveAuthStatus;
   statusByAccount: Record<string, "Authenticated" | "Unauthenticated">;
-  usageByAccount: Record<string, (UsageEntry & { ageMs: number; stale: boolean }) | null>;
+  usageByAccount: Record<
+    string,
+    (UsageEntry & { ageMs: number; stale: boolean }) | null
+  >;
   lastAction?: string | null;
 }): void {
-  const { config, activeStatus, statusByAccount, usageByAccount, lastAction } = params;
+  const { config, activeStatus, statusByAccount, usageByAccount, lastAction } =
+    params;
   const width = Math.min(Math.max(process.stdout.columns ?? 80, 70), 110);
   const headerWidth = width - 2;
   const bannerLabel = chalk.white.bold(" Codex Switcher ");
@@ -245,7 +273,9 @@ export function renderDashboard(params: {
 
   clearScreen();
   console.log(chalk.bgMagenta.black(`┏${"━".repeat(headerWidth)}┓`));
-  console.log(chalk.bgMagenta.black(`┃${bannerLabel}${" ".repeat(bannerPad)}┃`));
+  console.log(
+    chalk.bgMagenta.black(`┃${bannerLabel}${" ".repeat(bannerPad)}┃`)
+  );
   console.log(chalk.bgMagenta.black(`┗${"━".repeat(headerWidth)}┛`));
 
   const activeName = config.active;
@@ -257,14 +287,20 @@ export function renderDashboard(params: {
     const shownStatus: AuthStatus =
       activeStatus === "No profile" ? "Unauthenticated" : activeStatus;
     console.log(
-      `${chalk.green("➤")} ${chalk.cyan.bold(activeName)}  ${formatStatus(shownStatus)}`
+      `${chalk.green("➤")} ${chalk.cyan.bold(activeName)}  ${formatStatus(
+        shownStatus
+      )}`
     );
-    console.log(`   ${chalk.dim(`Auth → ${toTildePath(activeAccount.authFile)}`)}`);
+    console.log(
+      `   ${chalk.dim(`Auth → ${toTildePath(activeAccount.authFile)}`)}`
+    );
     for (const line of buildUsageLines(activeUsage)) {
       console.log(`   ${line}`);
     }
   } else {
-    console.log(chalk.yellow("No active profile. Use 'Use profile' to select."));
+    console.log(
+      chalk.yellow("No active profile. Use 'Use profile' to select.")
+    );
   }
 
   if (lastAction) {
@@ -275,9 +311,15 @@ export function renderDashboard(params: {
   console.log("");
   console.log(drawSectionTitle("Profiles", width));
 
-  const accountNames = Object.keys(config.accounts).sort((a, b) => a.localeCompare(b));
+  const accountNames = Object.keys(config.accounts).sort((a, b) =>
+    a.localeCompare(b)
+  );
   if (accountNames.length === 0) {
-    console.log(chalk.yellow("No profiles configured. Choose 'Add profile' to get started."));
+    console.log(
+      chalk.yellow(
+        "No profiles configured. Choose 'Add profile' to get started."
+      )
+    );
   } else {
     const rows = accountNames.map((name, idx) => {
       const status: AuthStatus =
@@ -296,7 +338,10 @@ export function renderDashboard(params: {
     });
 
     const indexWidth = String(rows.length).length + 2;
-    const nameWidth = Math.max(...rows.map((row) => stripAnsi(row.name).length), 8);
+    const nameWidth = Math.max(
+      ...rows.map((row) => stripAnsi(row.name).length),
+      8
+    );
     const statusWidth = Math.max(
       ...rows.map((row) => stripAnsi(formatStatus(row.status)).length),
       13
@@ -319,7 +364,11 @@ export function renderDashboard(params: {
         nameWidth + 4
       );
       const statusCell = padEnd(formatStatus(row.status), statusWidth + 2);
-      console.log(`${indexCell} ${nameCell}${statusCell}${chalk.dim(toTildePath(row.authFile))}`);
+      console.log(
+        `${indexCell} ${nameCell}${statusCell}${chalk.dim(
+          toTildePath(row.authFile)
+        )}`
+      );
 
       if (!row.isActive) {
         const usageLines = buildUsageLines(usageByAccount[row.name] ?? null);
@@ -332,6 +381,12 @@ export function renderDashboard(params: {
 
   console.log("");
   console.log(drawSectionTitle("Shortcuts", width));
-  console.log(`${chalk.dim("↵")} Confirm  ${chalk.dim("↑/↓")} Navigate  ${chalk.dim("Esc")} Cancel`);
-  console.log(chalk.dim("Press Ctrl+C at any time to quit or use the menu to exit."));
+  console.log(
+    `${chalk.dim("↵")} Confirm  ${chalk.dim("↑/↓")} Navigate  ${chalk.dim(
+      "Esc"
+    )} Cancel`
+  );
+  console.log(
+    chalk.dim("Press Ctrl+C at any time to quit or use the menu to exit.")
+  );
 }

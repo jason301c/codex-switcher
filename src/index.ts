@@ -14,11 +14,7 @@ import {
 } from "./config.js";
 import { SHARED_CODEX_HOME } from "./paths.js";
 import { hydrateActiveAuth, persistActiveAuth } from "./codexHome.js";
-import {
-  clearScreen,
-  renderDashboard,
-  renderExecutionBanner,
-} from "./ui.js";
+import { clearScreen, renderDashboard, renderExecutionBanner } from "./ui.js";
 import { createUsageManager } from "./usage.js";
 
 const REAL_CODEX_CMD = "codex";
@@ -34,9 +30,44 @@ type MenuChoice =
 
 const usageManager = createUsageManager();
 
+// Global diagnostics: capture and log otherwise-silent exits so we can debug
+// situations where the process terminates without a visible stack trace.
+process.on("uncaughtException", (err: Error) => {
+  try {
+    console.error(
+      "Fatal: uncaught exception:",
+      err && err.stack ? err.stack : err
+    );
+  } catch (e) {
+    // best-effort
+    console.error("Fatal: uncaught exception (could not format error)");
+  }
+  // still exit with non-zero code to signal failure
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  try {
+    console.error("Unhandled promise rejection:", reason);
+  } catch (e) {
+    console.error("Unhandled promise rejection (could not format reason)");
+  }
+});
+
+process.on("exit", (code) => {
+  // Log to stderr so the terminal shows that we exited and with what code.
+  console.error(`Process exiting with code ${code}`);
+});
+
 interface PromptHandle {
   promise: Promise<MenuChoice>;
   cancel: () => void;
+  /**
+   * Attempt to refresh/redraw the inquirer prompt UI after we've rewritten
+   * the screen above it. This is best-effort and guarded so it won't throw
+   * if internals aren't present.
+   */
+  refresh?: () => void;
 }
 
 interface UsageUpdateHandle {
@@ -74,13 +105,36 @@ function startMainMenuPrompt(): PromptHandle {
     if (ui && typeof ui.close === "function") {
       ui.close();
     }
-    if (ui?.rl) {
-      if (typeof ui.rl.pause === "function") {
-        ui.rl.pause();
+    // Do not close or pause the underlying readline instance here. Closing
+    // the rl can terminate the process or leave the TTY in a bad state. Let
+    // inquirer handle the rl lifecycle when the prompt resolves.
+  };
+
+  const refresh = (): void => {
+    const ui = prompt.ui as any | undefined;
+    try {
+      if (!ui) return;
+      // inquirer internals may expose a render method
+      if (typeof ui.render === "function") {
+        ui.render();
+        return;
       }
-      if (typeof ui.rl.close === "function") {
-        ui.rl.close();
+      // some versions use a private _prompt or rl with a refresh facility
+      if (ui._prompt && typeof ui._prompt.render === "function") {
+        ui._prompt.render();
+        return;
       }
+      if (ui.rl && typeof ui.rl.render === "function") {
+        ui.rl.render();
+        return;
+      }
+      // as a fallback, attempt to re-print the prompt line(s) by writing a
+      // single newline to trigger terminal redraw — best-effort only.
+      if (ui.rl && ui.rl.output && typeof ui.rl.output.write === "function") {
+        ui.rl.output.write("");
+      }
+    } catch (e) {
+      // swallow; refresh is best-effort
     }
   };
 
@@ -94,14 +148,16 @@ function startMainMenuPrompt(): PromptHandle {
       throw error;
     });
 
-  return { promise, cancel };
+  return { promise, cancel, refresh };
 }
 
 async function chooseProfile(promptMessage: string): Promise<string | null> {
   const config = loadConfig();
   const names = Object.keys(config.accounts).sort((a, b) => a.localeCompare(b));
   if (names.length === 0) {
-    console.log(chalk.yellow("No profiles exist. Use 'Add a new profile' first."));
+    console.log(
+      chalk.yellow("No profiles exist. Use 'Add a new profile' first.")
+    );
     return null;
   }
 
@@ -118,7 +174,10 @@ async function chooseProfile(promptMessage: string): Promise<string | null> {
   return answer.name;
 }
 
-async function promptForName(message: string, defaultValue = ""): Promise<string> {
+async function promptForName(
+  message: string,
+  defaultValue = ""
+): Promise<string> {
   const answer = await inquirer.prompt<{ value: string }>({
     type: "input",
     name: "value",
@@ -130,7 +189,9 @@ async function promptForName(message: string, defaultValue = ""): Promise<string
   return answer.value.trim();
 }
 
-function collectAccounts(config: AccountsConfig): Array<{ name: string; record: AccountRecord }> {
+function collectAccounts(
+  config: AccountsConfig
+): Array<{ name: string; record: AccountRecord }> {
   return Object.entries(config.accounts).map(([name, record]) => ({
     name,
     record,
@@ -296,7 +357,12 @@ async function runCodex(args: string[]): Promise<void> {
   const usageEntry = usageManager.getSummary(activeName);
   const activeStatus = getAuthStatus(account.authFile);
 
-  renderExecutionBanner(activeName, activeStatus, SHARED_CODEX_HOME, usageEntry);
+  renderExecutionBanner(
+    activeName,
+    activeStatus,
+    SHARED_CODEX_HOME,
+    usageEntry
+  );
 
   try {
     hydrateActiveAuth(account.authFile);
@@ -305,10 +371,12 @@ async function runCodex(args: string[]): Promise<void> {
     console.error(chalk.red(`\n${err.message}`));
   }
 
-  usageManager.refreshAccounts(accountsList, { pruneMissing: true }).catch((error) => {
-    const err = error as Error;
-    console.warn(`Usage refresh failed: ${err.message}`);
-  });
+  usageManager
+    .refreshAccounts(accountsList, { pruneMissing: true })
+    .catch((error) => {
+      const err = error as Error;
+      console.warn(`Usage refresh failed: ${err.message}`);
+    });
 
   const child = spawn(REAL_CODEX_CMD, args, {
     stdio: "inherit",
@@ -321,13 +389,19 @@ async function runCodex(args: string[]): Promise<void> {
   child.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") {
       console.error(
-        chalk.red(`\nError: Could not find the original '${REAL_CODEX_CMD}' command.`)
+        chalk.red(
+          `\nError: Could not find the original '${REAL_CODEX_CMD}' command.`
+        )
       );
       console.error(
-        chalk.yellow("Ensure you have installed the official OpenAI Codex CLI globally.")
+        chalk.yellow(
+          "Ensure you have installed the official OpenAI Codex CLI globally."
+        )
       );
     } else {
-      console.error(chalk.red(`\nFailed to start codex process: ${error.message}`));
+      console.error(
+        chalk.red(`\nFailed to start codex process: ${error.message}`)
+      );
     }
     process.exit(1);
   });
@@ -344,10 +418,12 @@ async function runCodex(args: string[]): Promise<void> {
 }
 
 async function mainTuiLoop(): Promise<void> {
+  console.error("mainTuiLoop: starting");
   let lastActionMessage: string | null = null;
   let usageResolvers: Array<() => void> = [];
 
   const unsubscribe = usageManager.onUpdate(() => {
+    console.error("mainTuiLoop: usageManager.onUpdate fired");
     const pending = usageResolvers;
     usageResolvers = [];
     for (const resolve of pending) {
@@ -392,11 +468,15 @@ async function mainTuiLoop(): Promise<void> {
       }));
       const usageByAccount = usageManager.getAllSummaries(config.accounts);
       const statusByAccount = Object.fromEntries(
-        accountsList.map(({ name, authFile }) => [name, getAuthStatus(authFile)])
+        accountsList.map(({ name, authFile }) => [
+          name,
+          getAuthStatus(authFile),
+        ])
       );
-      const activeStatus: "Authenticated" | "Unauthenticated" | "No profile" = config.active
-        ? getAuthStatus(config.accounts[config.active].authFile)
-        : "No profile";
+      const activeStatus: "Authenticated" | "Unauthenticated" | "No profile" =
+        config.active
+          ? getAuthStatus(config.accounts[config.active].authFile)
+          : "No profile";
 
       renderDashboard({
         config,
@@ -408,14 +488,18 @@ async function mainTuiLoop(): Promise<void> {
       lastActionMessage = null;
 
       const usageWait = waitForUsageUpdate();
-      usageManager.refreshAccounts(accountsList, { pruneMissing: true }).catch((error) => {
-        const err = error as Error;
-        console.warn(`Usage refresh failed: ${err.message}`);
-      });
+      usageManager
+        .refreshAccounts(accountsList, { pruneMissing: true })
+        .catch((error) => {
+          const err = error as Error;
+          console.warn(`Usage refresh failed: ${err.message}`);
+        });
 
       const promptHandle = startMainMenuPrompt();
       const menuResult = promptHandle.promise
-        .then<MenuChoice | { type: "prompt_error"; error: unknown }>((choice) => choice)
+        .then<MenuChoice | { type: "prompt_error"; error: unknown }>(
+          (choice) => choice
+        )
         .catch((error: unknown) => ({ type: "prompt_error" as const, error }));
 
       const raceResult = await Promise.race([
@@ -425,13 +509,163 @@ async function mainTuiLoop(): Promise<void> {
 
       if (typeof raceResult === "object" && "type" in raceResult) {
         if (raceResult.type === "usage_update") {
-          promptHandle.cancel();
+          console.error(
+            "mainTuiLoop: usage_update received — redrawing dashboard and refreshing prompt"
+          );
           usageWait.cancel();
-          await menuResult.catch(() => undefined);
-          await new Promise((resolve) => setTimeout(resolve, 0));
+          lastActionMessage = chalk.green("Usage cache refreshed.");
+
+          // inner loop: keep redrawing while usage updates arrive
+          while (true) {
+            let freshConfig: AccountsConfig | null = null;
+            let freshAccountsList: Array<{ name: string; authFile: string }> =
+              accountsList;
+            let freshUsageByAccount: Record<
+              string,
+              | (import("./usage.js").UsageEntry & {
+                  ageMs: number;
+                  stale: boolean;
+                })
+              | null
+            > = usageByAccount;
+            let freshStatusByAccount: Record<
+              string,
+              "Authenticated" | "Unauthenticated"
+            > = statusByAccount;
+            let freshActiveStatus:
+              | "Authenticated"
+              | "Unauthenticated"
+              | "No profile" = activeStatus;
+            try {
+              freshConfig = loadConfig();
+              freshAccountsList = collectAccounts(freshConfig).map(
+                ({ name, record }) => ({
+                  name,
+                  authFile: record.authFile,
+                })
+              );
+              freshUsageByAccount = usageManager.getAllSummaries(
+                freshConfig.accounts
+              );
+              freshStatusByAccount = Object.fromEntries(
+                freshAccountsList.map(({ name, authFile }) => [
+                  name,
+                  getAuthStatus(authFile),
+                ])
+              );
+              freshActiveStatus = freshConfig.active
+                ? getAuthStatus(
+                    freshConfig.accounts[freshConfig.active].authFile
+                  )
+                : "No profile";
+
+              renderDashboard({
+                config: freshConfig,
+                activeStatus: freshActiveStatus,
+                statusByAccount: freshStatusByAccount,
+                usageByAccount: freshUsageByAccount,
+                lastAction: lastActionMessage,
+              });
+
+              try {
+                promptHandle.refresh?.();
+              } catch (e) {
+                // ignore; refresh is best-effort
+              }
+            } catch (e) {
+              console.warn(`In-place refresh failed: ${(e as Error).message}`);
+            }
+
+            // Wait for either the menu to resolve or another usage update
+            const next = await Promise.race([
+              menuResult,
+              waitForUsageUpdate().promise.then(() => ({
+                type: "usage_update" as const,
+              })),
+            ]).catch((err) => ({ type: "prompt_error" as const, error: err }));
+
+            if (typeof next === "object" && "type" in next) {
+              if (next.type === "usage_update") {
+                // another update arrived; loop and redraw again
+                continue;
+              }
+              if (next.type === "prompt_error") {
+                usageWait.cancel();
+                if ((next.error as { isTtyError?: boolean })?.isTtyError) {
+                  throw next.error;
+                }
+                // otherwise break out to outer loop and re-render there
+                break;
+              }
+            }
+
+            // next is the menu choice — process it below by reusing the
+            // existing switch logic. We'll assign to a local variable and
+            // run the switch, then continue the outer loop.
+            const choice = next as MenuChoice;
+
+            switch (choice) {
+              case "add":
+                lastActionMessage = await doAdd();
+                break;
+              case "use":
+                lastActionMessage = await doUse();
+                break;
+              case "delete":
+                lastActionMessage = await doDelete();
+                break;
+              case "rename":
+                lastActionMessage = await doRename();
+                break;
+              case "launch":
+                lastActionMessage = await doLaunch();
+                if (!lastActionMessage) {
+                  console.error(
+                    "mainTuiLoop: exiting because launch returned (child started)"
+                  );
+                  unsubscribe();
+                  return;
+                }
+                break;
+              case "refresh_usage":
+                usageManager.invalidateCache();
+                usageManager
+                  .refreshAccounts(freshAccountsList, {
+                    force: true,
+                    pruneMissing: true,
+                  })
+                  .catch((error) => {
+                    const err = error as Error;
+                    console.warn(`Usage refresh failed: ${err.message}`);
+                  });
+                lastActionMessage = chalk.green(
+                  "Usage cache cleared. Refresh scheduled."
+                );
+                break;
+              case "exit":
+              default:
+                console.error(
+                  "mainTuiLoop: exit choice selected - exiting loop"
+                );
+                clearScreen();
+                console.log(chalk.dim("Goodbye."));
+                unsubscribe();
+                return;
+            }
+
+            // after handling the user's choice, pause briefly then continue
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            // processed the choice; continue outer loop to re-render normally
+            break;
+          }
+
           continue;
         }
         if (raceResult.type === "prompt_error") {
+          console.error(
+            "mainTuiLoop: prompt_error received",
+            (raceResult.error as any)?.message ?? raceResult.error
+          );
           usageWait.cancel();
           if ((raceResult.error as { isTtyError?: boolean })?.isTtyError) {
             throw raceResult.error;
@@ -459,6 +693,9 @@ async function mainTuiLoop(): Promise<void> {
         case "launch":
           lastActionMessage = await doLaunch();
           if (!lastActionMessage) {
+            console.error(
+              "mainTuiLoop: exiting because launch returned (child started)"
+            );
             unsubscribe();
             return;
           }
@@ -471,10 +708,13 @@ async function mainTuiLoop(): Promise<void> {
               const err = error as Error;
               console.warn(`Usage refresh failed: ${err.message}`);
             });
-          lastActionMessage = chalk.green("Usage cache cleared. Refresh scheduled.");
+          lastActionMessage = chalk.green(
+            "Usage cache cleared. Refresh scheduled."
+          );
           break;
         case "exit":
         default:
+          console.error("mainTuiLoop: exit choice selected - exiting loop");
           clearScreen();
           console.log(chalk.dim("Goodbye."));
           unsubscribe();

@@ -1,6 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { ACCOUNTS_ROOT, CONFIG_FILE, CONFIG_ROOT } from "./paths.js";
+import {
+  ACCOUNTS_ROOT,
+  CONFIG_FILE,
+  CONFIG_ROOT,
+  SHARED_CODEX_HOME,
+} from "./paths.js";
 
 export interface AccountRecord {
   authFile: string;
@@ -21,6 +26,9 @@ export function initializeConfig(): void {
   ensureDirectory(CONFIG_ROOT);
   ensureDirectory(ACCOUNTS_ROOT);
   ensureDirectory(path.dirname(CONFIG_FILE));
+  // Ensure the shared codex home exists so later operations (hydrate/persist)
+  // that copy into ACTIVE_AUTH_FILE won't fail with ENOENT.
+  ensureDirectory(SHARED_CODEX_HOME);
 
   if (!fs.existsSync(CONFIG_FILE)) {
     const initialConfig: AccountsConfig = { active: null, accounts: {} };
@@ -32,7 +40,10 @@ export function getAuthFilePath(profileName: string): string {
   return path.join(ACCOUNTS_ROOT, `${profileName}.auth.json`);
 }
 
-function migrateLegacyAuthDirectory(legacyDir: string, destinationFile: string): void {
+function migrateLegacyAuthDirectory(
+  legacyDir: string,
+  destinationFile: string
+): void {
   const legacyAuthPath = path.join(legacyDir, "auth.json");
   if (!fs.existsSync(legacyAuthPath)) {
     return;
@@ -88,18 +99,25 @@ export function saveConfig(config: AccountsConfig): void {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-export function getAuthStatus(authFilePath: string): "Authenticated" | "Unauthenticated" {
+export function getAuthStatus(
+  authFilePath: string
+): "Authenticated" | "Unauthenticated" {
   return fs.existsSync(authFilePath) ? "Authenticated" : "Unauthenticated";
 }
 
-export function listAccounts(config: AccountsConfig): Array<{ name: string; record: AccountRecord }> {
+export function listAccounts(
+  config: AccountsConfig
+): Array<{ name: string; record: AccountRecord }> {
   return Object.entries(config.accounts).map(([name, record]) => ({
     name,
     record,
   }));
 }
 
-export function removeAccountFromConfig(config: AccountsConfig, name: string): void {
+export function removeAccountFromConfig(
+  config: AccountsConfig,
+  name: string
+): void {
   delete config.accounts[name];
   if (config.active === name) {
     config.active = null;
