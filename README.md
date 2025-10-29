@@ -30,9 +30,10 @@ Codex Switcher wraps the official `codex` CLI so you can hop between multiple au
 
 ## Development
 
-- Install dependencies with `npm install`, then run `node index.js` for the TUI (or `./index.js` thanks to the shebang).
-- The codebase is small (two files) and uses `inquirer` for prompts plus `chalk` for styling. No build step is required.
-- There are no automated tests yet—please describe how you verified changes in your PR.
+- Install dependencies with `npm install`, then build the TypeScript sources with `npm run build`.
+- The CLI entry lives in `src/index.ts`; bundled output is written to `dist/`. Use `npm link` (after building) to test the compiled CLI locally.
+- `npm run check` runs a type-only compile (`tsc --noEmit`) and `npm run build` produces the release artifacts. Include at least `npm run build` in your manual test notes.
+- Publishing flow: bump the version, run `npm run build`, and publish with `npm publish`. The `prepublishOnly` hook rebuilds automatically before upload.
 
 ## Contributing
 

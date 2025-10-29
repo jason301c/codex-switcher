@@ -1,13 +1,18 @@
 {
   "name": "codex-switcher",
   "version": "1.0.1",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "check": "tsc --noEmit",
+    "test": "npm run build",
+    "prepublishOnly": "npm run build"
   },
   "type": "module",
   "bin": {
-    "ccx": "index.js"
+    "ccx": "dist/index.js"
   },
   "repository": {
     "type": "git",
@@ -32,5 +37,9 @@
     "chalk": "^5.6.2",
     "commander": "^14.0.1",
     "inquirer": "^9.3.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.9",
+    "typescript": "^5.6.3"
   }
 }
