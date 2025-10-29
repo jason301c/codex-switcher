@@ -18,9 +18,11 @@ import {
 const CONFIG_ROOT = path.join(os.homedir(), ".codex_switcher");
 const CONFIG_FILE = path.join(CONFIG_ROOT, "accounts.json");
 
-// Define where the actual Codex configuration files (auth.json, config.toml)
-// will be stored for each account. This is the directory that will be assigned to CODEX_HOME.
+// Store per-profile auth.json snapshots in a flat directory under the home folder.
 const ACCOUNTS_ROOT = path.join(os.homedir(), ".codex_accounts");
+// Shared CODEX_HOME used for every invocation; the active auth.json is swapped in/out here.
+const SHARED_CODEX_HOME = path.join(CONFIG_ROOT, "shared_codex_home");
+const ACTIVE_AUTH_FILE = path.join(SHARED_CODEX_HOME, "auth.json");
 
 const REAL_CODEX_CMD = "codex";
 
@@ -34,9 +36,63 @@ function initializeConfig() {
   if (!fs.existsSync(ACCOUNTS_ROOT)) {
     fs.mkdirSync(ACCOUNTS_ROOT, { recursive: true });
   }
+  if (!fs.existsSync(SHARED_CODEX_HOME)) {
+    fs.mkdirSync(SHARED_CODEX_HOME, { recursive: true });
+  }
   if (!fs.existsSync(CONFIG_FILE)) {
     const initialConfig = { active: null, accounts: {} };
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(initialConfig, null, 2));
+  }
+}
+
+/**
+ * Returns the on-disk location for a profile's auth.json snapshot.
+ */
+function getAuthFilePath(profileName) {
+  return path.join(ACCOUNTS_ROOT, `${profileName}.auth.json`);
+}
+
+/**
+ * Copies a legacy per-profile directory auth.json into the new flat storage.
+ */
+function migrateLegacyAuth(legacyDir, destAuthPath) {
+  const legacyAuth = path.join(legacyDir, "auth.json");
+  if (!fs.existsSync(legacyAuth)) {
+    return;
+  }
+  try {
+    fs.copyFileSync(legacyAuth, destAuthPath);
+  } catch (e) {
+    console.error(
+      chalk.yellow(
+        `Warning: failed to migrate legacy auth from ${legacyAuth}: ${e.message}`
+      )
+    );
+  }
+}
+
+/**
+ * Normalizes config accounts so each entry is an object with an authFile path.
+ * Performs a best-effort migration for legacy directory-based accounts.
+ */
+function normalizeAccounts(config) {
+  let mutated = false;
+  for (const [name, entry] of Object.entries(config.accounts)) {
+    if (typeof entry === "string") {
+      const normalized = { authFile: getAuthFilePath(name) };
+      migrateLegacyAuth(entry, normalized.authFile);
+      config.accounts[name] = normalized;
+      mutated = true;
+    } else if (!entry || typeof entry !== "object") {
+      config.accounts[name] = { authFile: getAuthFilePath(name) };
+      mutated = true;
+    } else if (!entry.authFile) {
+      entry.authFile = getAuthFilePath(name);
+      mutated = true;
+    }
+  }
+  if (mutated) {
+    saveConfig(config);
   }
 }
 
@@ -47,7 +103,9 @@ function loadConfig() {
   initializeConfig();
   try {
     const data = fs.readFileSync(CONFIG_FILE, "utf-8");
-    return JSON.parse(data);
+    const config = JSON.parse(data);
+    normalizeAccounts(config);
+    return config;
   } catch (e) {
     console.error(
       chalk.red(`Error reading configuration file ${CONFIG_FILE}: ${e.message}`)
@@ -67,11 +125,45 @@ function saveConfig(config) {
  * Checks if the authentication file exists for a given profile path.
  * Returns plain string status (to be formatted by UI renderers).
  */
-function getAuthStatus(accountPath) {
-  if (fs.existsSync(path.join(accountPath, "auth.json"))) {
+function getAuthStatus(authFilePath) {
+  if (fs.existsSync(authFilePath)) {
     return "Authenticated";
   }
   return "Unauthenticated";
+}
+
+/**
+ * Copies the stored auth.json for a profile into the shared CODEX home.
+ */
+function hydrateActiveAuth(authFilePath) {
+  try {
+    if (fs.existsSync(authFilePath)) {
+      fs.copyFileSync(authFilePath, ACTIVE_AUTH_FILE);
+    } else if (fs.existsSync(ACTIVE_AUTH_FILE)) {
+      fs.rmSync(ACTIVE_AUTH_FILE, { force: true });
+    }
+  } catch (e) {
+    console.error(
+      chalk.red(`\nFailed to prepare auth file for execution: ${e.message}`)
+    );
+  }
+}
+
+/**
+ * Persists the shared CODEX_HOME auth.json back into the profile snapshot.
+ */
+function persistActiveAuth(authFilePath) {
+  try {
+    if (fs.existsSync(ACTIVE_AUTH_FILE)) {
+      fs.copyFileSync(ACTIVE_AUTH_FILE, authFilePath);
+    } else if (fs.existsSync(authFilePath)) {
+      fs.rmSync(authFilePath, { force: true });
+    }
+  } catch (e) {
+    console.error(
+      chalk.red(`\nFailed to persist auth file after execution: ${e.message}`)
+    );
+  }
 }
 
 // --- Core Execution Logic ---
@@ -91,19 +183,21 @@ function runCodex(args) {
     process.exit(1);
   }
 
-  const codexHomePath = config.accounts[activeName];
+  const account = config.accounts[activeName];
 
   // Output profile status using the custom UI banner
   renderExecutionBanner(
     activeName,
-    getAuthStatus(codexHomePath),
-    codexHomePath
+    getAuthStatus(account.authFile),
+    SHARED_CODEX_HOME
   );
+
+  hydrateActiveAuth(account.authFile);
 
   // Prepare environment variables for the child process
   const env = {
     ...process.env,
-    CODEX_HOME: codexHomePath,
+    CODEX_HOME: SHARED_CODEX_HOME,
   };
 
   // Spawn the original codex executable
@@ -133,6 +227,7 @@ function runCodex(args) {
   });
 
   child.on("close", (code) => {
+    persistActiveAuth(account.authFile);
     process.exit(code || 0);
   });
 }
@@ -199,7 +294,7 @@ async function promptForName(message, defaultVal = "") {
 async function doAdd() {
   const name = await promptForName("New profile name:");
   const config = loadConfig();
-  const accountPath = path.join(ACCOUNTS_ROOT, name);
+  const authFilePath = getAuthFilePath(name);
   if (config.accounts[name]) {
     const overwrite = await inquirer.prompt({
       type: "confirm",
@@ -210,8 +305,10 @@ async function doAdd() {
     if (!overwrite.ok) return chalk.dim("Add cancelled.");
   }
 
-  fs.mkdirSync(accountPath, { recursive: true });
-  config.accounts[name] = accountPath;
+  if (fs.existsSync(authFilePath)) {
+    fs.rmSync(authFilePath, { force: true });
+  }
+  config.accounts[name] = { authFile: authFilePath };
   const prev = config.active;
   config.active = name;
   saveConfig(config);
@@ -233,17 +330,20 @@ async function doDelete() {
   const name = await chooseProfile("Select profile to delete:");
   if (!name) return chalk.dim("Deletion cancelled.");
   const config = loadConfig();
-  const accountPath = config.accounts[name];
+  const account = config.accounts[name];
+  const authFilePath = account.authFile;
   const confirm = await inquirer.prompt({
     type: "confirm",
     name: "ok",
-    message: `Permanently delete '${name}' and its directory (${accountPath})?`,
+    message: `Permanently delete '${name}' and its auth file (${authFilePath})?`,
     default: false,
   });
   if (!confirm.ok) return chalk.dim("Deletion cancelled.");
 
   try {
-    fs.rmSync(accountPath, { recursive: true, force: true });
+    if (fs.existsSync(authFilePath)) {
+      fs.rmSync(authFilePath, { force: true });
+    }
     delete config.accounts[name];
     if (config.active === name) config.active = null;
     // auto-select another if available
@@ -267,15 +367,17 @@ async function doRename() {
   if (config.accounts[newName]) {
     return chalk.red(`A profile named '${newName}' already exists.`);
   }
-  const oldPath = config.accounts[oldName];
-  const newPath = path.join(ACCOUNTS_ROOT, newName);
+  const oldRecord = config.accounts[oldName];
+  const newAuthPath = getAuthFilePath(newName);
   try {
-    fs.renameSync(oldPath, newPath);
+    if (fs.existsSync(oldRecord.authFile)) {
+      fs.renameSync(oldRecord.authFile, newAuthPath);
+    }
   } catch (e) {
-    return chalk.red(`Failed to rename directory: ${e.message}`);
+    return chalk.red(`Failed to rename auth file: ${e.message}`);
   }
   delete config.accounts[oldName];
-  config.accounts[newName] = newPath;
+  config.accounts[newName] = { authFile: newAuthPath };
   if (config.active === oldName) config.active = newName;
   saveConfig(config);
   return chalk.green(`Renamed '${oldName}' → '${newName}'.`);

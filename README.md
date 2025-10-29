@@ -1,13 +1,13 @@
 # Codex Switcher
 
-Codex Switcher wraps the official `codex` CLI so you can hop between multiple authenticated contexts without touching your real config files. It keeps each profile's `auth.json` and `config.toml` isolated under `~/.codex_accounts/<profile>` and uses a small TUI to keep track of what's active before delegating every command to the real Codex binary.
+Codex Switcher wraps the official `codex` CLI so you can hop between multiple authenticated contexts without touching your real config files. It keeps a dedicated copy of each profile's `auth.json` under `~/.codex_accounts/<profile>.auth.json` and uses a small TUI to keep track of what's active before delegating every command to the real Codex binary.
 
 ## Features
 
 - Zero-config TUI (`ccx`) for adding, renaming, deleting, and activating Codex profiles.
 - Runs the upstream `codex` command with `CODEX_HOME` automatically set to the active profile.
 - Friendly status banners that show which account is live and whether it is authenticated.
-- Safe defaults: stores its own state in `~/.codex_switcher/accounts.json` and never touches the original Codex files.
+- Safe defaults: stores its own state in `~/.codex_switcher/accounts.json`, swaps `auth.json` snapshots in and out of `~/.codex_switcher/shared_codex_home`, and never touches the original Codex files.
 
 ## Installation
 
@@ -23,7 +23,7 @@ Codex Switcher wraps the official `codex` CLI so you can hop between multiple au
 
 - `ccx` with no arguments launches the interactive dashboard. Add a profile, activate it, and optionally rename/delete as needed.
 - `ccx <anything>` forwards the arguments straight to the real `codex` binary while keeping the currently active profile's `CODEX_HOME`.
-- All profile data lives in `~/.codex_accounts`. Remove a profile in the UI and its directory is deleted for you. The switcher's own metadata sits in `~/.codex_switcher/accounts.json`.
+- All profile data lives in `~/.codex_accounts` as individual `auth.json` snapshots. Remove a profile in the UI and its saved auth file is deleted for you. The switcher's own metadata sits in `~/.codex_switcher/accounts.json`.
 
 ## Development
 

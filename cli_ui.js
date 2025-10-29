@@ -133,19 +133,21 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
   );
 
   const activeName = config.active;
-  const activePath = activeName ? config.accounts[activeName] : null;
+  const activeAccount = activeName ? config.accounts[activeName] : null;
   const activeStatus =
-    activeName && activePath ? getAuthStatus(activePath) : "No profile";
+    activeName && activeAccount
+      ? getAuthStatus(activeAccount.authFile)
+      : "No profile";
 
   console.log(drawSectionTitle("Active Profile", width));
 
-  if (activeName && activePath) {
+  if (activeName && activeAccount) {
     console.log(
       `${chalk.green("➤")} ${chalk.cyan.bold(activeName)}  ${formatStatus(
         activeStatus
       )}`
     );
-    console.log(`   ${chalk.dim(toTildePath(activePath))}`);
+    console.log(`   ${chalk.dim(`Auth → ${toTildePath(activeAccount.authFile)}`)}`);
   } else {
     console.log(chalk.yellow("No active profile. Use 'Use profile' to select."));
   }
@@ -172,13 +174,13 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
     );
   } else {
     const rows = accountNames.map((name, idx) => {
-      const accountPath = config.accounts[name];
-      const status = getAuthStatus(accountPath);
+      const account = config.accounts[name];
+      const status = getAuthStatus(account.authFile);
       return {
         index: idx + 1,
         name,
         status,
-        path: toTildePath(accountPath),
+        path: toTildePath(account.authFile),
         isActive: name === activeName,
       };
     });
@@ -197,7 +199,7 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
       padEnd(chalk.dim("#"), indexWidth) +
       padEnd(chalk.dim("Profile"), nameWidth + 4) +
       padEnd(chalk.dim("Status"), statusWidth + 2) +
-      chalk.dim("Location");
+      chalk.dim("Auth File");
 
     console.log(baseHeader);
     console.log(chalk.gray("-".repeat(width - 4)));
