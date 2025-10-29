@@ -1,6 +1,147 @@
 import chalk from "chalk";
 import os from "os";
-import path from "path";
+
+const STRIP_ANSI_REGEX = /\x1b\[[0-9;]*m/g;
+const stripAnsi = (s) => s.replace(STRIP_ANSI_REGEX, "");
+
+function formatDuration(seconds) {
+  if (
+    typeof seconds !== "number" ||
+    !Number.isFinite(seconds) ||
+    seconds <= 0
+  ) {
+    return null;
+  }
+  let remaining = Math.round(seconds);
+  const units = [
+    { label: "d", size: 86400 },
+    { label: "h", size: 3600 },
+    { label: "m", size: 60 },
+    { label: "s", size: 1 },
+  ];
+  const parts = [];
+  for (const unit of units) {
+    if (remaining >= unit.size) {
+      const value = Math.floor(remaining / unit.size);
+      parts.push(`${value}${unit.label}`);
+      remaining -= value * unit.size;
+    }
+    if (parts.length === 2) break;
+  }
+  if (parts.length === 0) {
+    return "0s";
+  }
+  return parts.join(" ");
+}
+
+function formatRateWindow(label, windowData) {
+  if (!windowData) return null;
+  const segments = [];
+  if (typeof windowData.usedPercent === "number") {
+    segments.push(`${windowData.usedPercent}% used`);
+  }
+  if (typeof windowData.resetAfterSeconds === "number") {
+    const reset = formatDuration(windowData.resetAfterSeconds);
+    if (reset) {
+      segments.push(`resets in ${reset}`);
+    }
+  }
+  if (typeof windowData.limitWindowSeconds === "number") {
+    const span = formatDuration(windowData.limitWindowSeconds);
+    if (span) {
+      segments.push(`window ${span}`);
+    }
+  }
+  if (segments.length === 0) return null;
+  return `${chalk.dim(`  ${label}:`)} ${chalk.white(segments.join(" · "))}`;
+}
+
+function formatCredits(credits) {
+  if (!credits) return null;
+  const segments = [];
+  if (credits.balance != null) {
+    segments.push(`balance ${credits.balance}`);
+  }
+  if (typeof credits.unlimited === "boolean") {
+    segments.push(credits.unlimited ? "unlimited" : "limited");
+  }
+  if (segments.length === 0) return null;
+  return `${chalk.dim("  Credits:")} ${chalk.white(segments.join(" · "))}`;
+}
+
+function buildUsageLines(usage, meta = {}) {
+  const ageLabel =
+    typeof meta.ageMs === "number" && meta.ageMs >= 0
+      ? formatDuration(meta.ageMs / 1000)
+      : null;
+  const metaParts = [];
+  if (meta.stale) {
+    metaParts.push(chalk.yellow("stale"));
+  }
+  if (ageLabel) {
+    metaParts.push(chalk.dim(`cached ${ageLabel} ago`));
+  }
+  const metaSuffix =
+    metaParts.length > 0 ? ` ${chalk.dim(`(${metaParts.join(", ")})`)}` : "";
+
+  if (!usage) {
+    return metaParts.length
+      ? [`${chalk.cyan.bold("Usage:")} ${chalk.dim("No data")}${metaSuffix}`]
+      : [];
+  }
+  if (usage.status === "error") {
+    return [
+      `${chalk.red("Usage:")} ${chalk.dim(
+        usage.message || "Unable to retrieve usage."
+      )}${metaSuffix}`,
+    ];
+  }
+  if (usage.status === "warning") {
+    return [
+      `${chalk.yellow("Usage:")} ${chalk.dim(
+        usage.message || "Usage unavailable."
+      )}${metaSuffix}`,
+    ];
+  }
+  if (usage.status !== "ok") {
+    return [];
+  }
+
+  const separator = chalk.dim(" · ");
+  const summaryParts = [];
+  if (usage.planType) {
+    summaryParts.push(`plan ${chalk.white(usage.planType)}`);
+  }
+  if (usage.rateLimit?.limitReached === true) {
+    summaryParts.push(chalk.red("limit reached"));
+  } else if (usage.rateLimit?.allowed === false) {
+    summaryParts.push(chalk.yellow("requests blocked"));
+  }
+  if (meta.stale) {
+    summaryParts.push(chalk.yellow("stale"));
+  }
+  if (ageLabel) {
+    summaryParts.push(chalk.dim(`cached ${ageLabel} ago`));
+  }
+  if (summaryParts.length === 0) {
+    summaryParts.push(chalk.white("active"));
+  }
+
+  const lines = [
+    `${chalk.cyan.bold("Usage:")} ${summaryParts.join(separator)}`,
+  ];
+
+  const primaryLine = formatRateWindow("Primary", usage.rateLimit?.primary);
+  if (primaryLine) lines.push(primaryLine);
+
+  const secondaryLine = formatRateWindow("Secondary", usage.rateLimit?.secondary);
+  if (secondaryLine) lines.push(secondaryLine);
+
+  const creditLine = formatCredits(usage.credits);
+  if (creditLine) lines.push(creditLine);
+
+  return lines;
+}
 
 /**
  * Renders a highly stylized banner for the active CODEX account during execution.
@@ -8,10 +149,12 @@ import path from "path";
  * @param {string} status - The authentication status (e.g., "Authenticated").
  * @param {string} codexHomePath - The actual CODEX_HOME path.
  */
-export function renderExecutionBanner(name, status, codexHomePath) {
-  // Helper to strip ANSI escape sequences so visible length can be measured
-  const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
-
+export function renderExecutionBanner(
+  name,
+  status,
+  codexHomePath,
+  usageEntry
+) {
   const padding = " ".repeat(2);
 
   // Prepare raw content strings (these include chalk styling)
@@ -27,10 +170,14 @@ export function renderExecutionBanner(name, status, codexHomePath) {
     codexHomePath
   )}`;
 
-  // Compute visible lengths (without ANSI codes) and derive a fitted box width
-  const visibleLengths = [title, nameLine, statusLine, pathLabel].map(
-    (s) => stripAnsi(s).length
+  const usageLines = buildUsageLines(
+    usageEntry ? usageEntry.summary : null,
+    usageEntry || {}
   );
+  const bodyLines = [nameLine, statusLine, pathLabel, ...usageLines];
+
+  // Compute visible lengths (without ANSI codes) and derive a fitted box width
+  const visibleLengths = [title, ...bodyLines].map((s) => stripAnsi(s).length);
   const maxVisible = Math.max(...visibleLengths, 0);
 
   const minWidth = 50;
@@ -49,35 +196,16 @@ export function renderExecutionBanner(name, status, codexHomePath) {
 
   console.error(chalk.magenta.bold("├" + border + "┤"));
 
-  // Name line
-  {
-    const visible = stripAnsi(nameLine).length;
-    const padCount = Math.max(0, boxWidth - visible - 3);
-    console.error(chalk.magenta.bold(`│ ${nameLine}${" ".repeat(padCount)} │`));
-  }
-
-  // Status line
-  {
-    const visible = stripAnsi(statusLine).length;
+  bodyLines.forEach((line) => {
+    const visible = stripAnsi(line).length;
     const padCount = Math.max(0, boxWidth - visible - 3);
     console.error(
-      chalk.magenta.bold(`│ ${statusLine}${" ".repeat(padCount)} │`)
+      chalk.magenta.bold(`│ ${line}${" ".repeat(padCount)} │`)
     );
-  }
-
-  // Path line
-  {
-    const visible = stripAnsi(pathLabel).length;
-    const padCount = Math.max(0, boxWidth - visible - 3);
-    console.error(
-      chalk.magenta.bold(`│ ${pathLabel}${" ".repeat(padCount)} │`)
-    );
-  }
+  });
 
   console.error(chalk.magenta.bold("└" + border + "┘"));
 }
-
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 function padEnd(input, width) {
   const visibleLen = stripAnsi(input).length;
@@ -112,7 +240,11 @@ export function clearScreen() {
   process.stdout.write("\x1b[2J\x1b[0;0H");
 }
 
-export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
+export function renderDashboard(
+  config,
+  getAuthStatus,
+  { lastAction, usageByAccount } = {}
+) {
   const width = Math.min(Math.max(process.stdout.columns || 80, 70), 110);
   const headerWidth = width - 2;
   const bannerLabel = chalk.white.bold(" Codex Switcher ");
@@ -138,6 +270,7 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
     activeName && activeAccount
       ? getAuthStatus(activeAccount.authFile)
       : "No profile";
+  const activeUsage = usageByAccount ? usageByAccount[activeName] : null;
 
   console.log(drawSectionTitle("Active Profile", width));
 
@@ -148,6 +281,13 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
       )}`
     );
     console.log(`   ${chalk.dim(`Auth → ${toTildePath(activeAccount.authFile)}`)}`);
+    const usageLines = buildUsageLines(
+      activeUsage ? activeUsage.summary : null,
+      activeUsage || {}
+    );
+    usageLines.forEach((line) => {
+      console.log(`   ${line}`);
+    });
   } else {
     console.log(chalk.yellow("No active profile. Use 'Use profile' to select."));
   }
@@ -197,6 +337,7 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
 
     const baseHeader =
       padEnd(chalk.dim("#"), indexWidth) +
+      " " +
       padEnd(chalk.dim("Profile"), nameWidth + 4) +
       padEnd(chalk.dim("Status"), statusWidth + 2) +
       chalk.dim("Auth File");
@@ -204,16 +345,28 @@ export function renderDashboard(config, getAuthStatus, { lastAction } = {}) {
     console.log(baseHeader);
     console.log(chalk.gray("-".repeat(width - 4)));
 
-    rows.forEach((row) => {
-      const marker = row.isActive ? chalk.green("★") : " ";
-      const indexCell = padEnd(`${marker} ${row.index}`, indexWidth);
-      const nameCell = padEnd(
-        row.isActive ? chalk.white.bold(row.name) : chalk.white(row.name),
-        nameWidth + 4
-      );
-      const statusCell = padEnd(formatStatus(row.status), statusWidth + 2);
-      console.log(`${indexCell}${nameCell}${statusCell}${chalk.dim(row.path)}`);
-    });
+      rows.forEach((row) => {
+        const marker = row.isActive ? chalk.green("★") : " ";
+        const indexCell = padEnd(`${marker} ${row.index}`, indexWidth);
+        const nameCell = padEnd(
+          row.isActive ? chalk.white.bold(row.name) : chalk.white(row.name),
+          nameWidth + 4
+        );
+        const statusCell = padEnd(formatStatus(row.status), statusWidth + 2);
+        console.log(
+          `${indexCell} ${nameCell}${statusCell}${chalk.dim(row.path)}`
+        );
+        if (!row.isActive && usageByAccount) {
+          const usageEntry = usageByAccount[row.name];
+          const usageLines = buildUsageLines(
+            usageEntry ? usageEntry.summary : null,
+            usageEntry || {}
+          );
+          usageLines.forEach((line) => {
+            console.log(`   ${chalk.dim(line)}`);
+          });
+        }
+      });
   }
 
   console.log("");

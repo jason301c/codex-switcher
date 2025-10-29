@@ -11,6 +11,7 @@ import {
   renderDashboard,
   renderExecutionBanner,
 } from "./cli_ui.js";
+import { createUsageManager } from "./usage.js";
 
 // --- Configuration and Utilities ---
 
@@ -44,6 +45,12 @@ function initializeConfig() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(initialConfig, null, 2));
   }
 }
+
+const usageManager = createUsageManager({
+  configRoot: CONFIG_ROOT,
+  cacheTtlMs: 15 * 60 * 1000,
+  fetchDelayMs: 2000,
+});
 
 /**
  * Returns the on-disk location for a profile's auth.json snapshot.
@@ -172,79 +179,96 @@ function persistActiveAuth(authFilePath) {
  * Executes the real 'codex' binary with the appropriate CODEX_HOME environment variable.
  * Handles the spawning and process management.
  */
-function runCodex(args) {
-  const config = loadConfig();
-  const activeName = config.active;
+async function runCodex(args) {
+  try {
+    const config = loadConfig();
+    const activeName = config.active;
 
-  if (!activeName || !config.accounts[activeName]) {
-    console.error(chalk.red(`\nNo active account set.`));
-    console.log(`1. Run ${chalk.cyan("ccx add <name>")} to create a context.`);
-    console.log(`2. Run ${chalk.cyan("ccx use <name>")} to activate it.`);
+    if (!activeName || !config.accounts[activeName]) {
+      console.error(chalk.red(`\nNo active account set.`));
+      console.log(`1. Run ${chalk.cyan("ccx add <name>")} to create a context.`);
+      console.log(`2. Run ${chalk.cyan("ccx use <name>")} to activate it.`);
+      process.exit(1);
+    }
+
+    const account = config.accounts[activeName];
+    const accountsList = Object.entries(config.accounts).map(
+      ([name, acc]) => ({
+        name,
+        authFile: acc.authFile,
+      })
+    );
+    const usageEntry = usageManager.getSummary(activeName);
+
+    // Output profile status using the custom UI banner
+    renderExecutionBanner(
+      activeName,
+      getAuthStatus(account.authFile),
+      SHARED_CODEX_HOME,
+      usageEntry
+    );
+
+    hydrateActiveAuth(account.authFile);
+    usageManager.refreshAccounts(accountsList, { pruneMissing: true });
+
+    // Prepare environment variables for the child process
+    const env = {
+      ...process.env,
+      CODEX_HOME: SHARED_CODEX_HOME,
+    };
+
+    // Spawn the original codex executable
+    const child = spawn(REAL_CODEX_CMD, args, {
+      stdio: "inherit",
+      env: env,
+    });
+
+    child.on("error", (err) => {
+      if (err.code === "ENOENT") {
+        console.error(
+          chalk.red(
+            `\nError: Could not find the original '${REAL_CODEX_CMD}' command.`
+          )
+        );
+        console.error(
+          chalk.yellow(
+            "Ensure you have installed the official OpenAI Codex CLI globally."
+          )
+        );
+      } else {
+        console.error(
+          chalk.red(`\nFailed to start codex process: ${err.message}`)
+        );
+      }
+      process.exit(1);
+    });
+
+    child.on("close", (code) => {
+      persistActiveAuth(account.authFile);
+      process.exit(code || 0);
+    });
+  } catch (e) {
+    console.error(
+      chalk.red(`\nFailed before launching Codex CLI: ${e.message}`)
+    );
     process.exit(1);
   }
-
-  const account = config.accounts[activeName];
-
-  // Output profile status using the custom UI banner
-  renderExecutionBanner(
-    activeName,
-    getAuthStatus(account.authFile),
-    SHARED_CODEX_HOME
-  );
-
-  hydrateActiveAuth(account.authFile);
-
-  // Prepare environment variables for the child process
-  const env = {
-    ...process.env,
-    CODEX_HOME: SHARED_CODEX_HOME,
-  };
-
-  // Spawn the original codex executable
-  const child = spawn(REAL_CODEX_CMD, args, {
-    stdio: "inherit",
-    env: env,
-  });
-
-  child.on("error", (err) => {
-    if (err.code === "ENOENT") {
-      console.error(
-        chalk.red(
-          `\nError: Could not find the original '${REAL_CODEX_CMD}' command.`
-        )
-      );
-      console.error(
-        chalk.yellow(
-          "Ensure you have installed the official OpenAI Codex CLI globally."
-        )
-      );
-    } else {
-      console.error(
-        chalk.red(`\nFailed to start codex process: ${err.message}`)
-      );
-    }
-    process.exit(1);
-  });
-
-  child.on("close", (code) => {
-    persistActiveAuth(account.authFile);
-    process.exit(code || 0);
-  });
 }
 
 // --- TUI Implementation (interactive menu using inquirer) ---
 
-async function promptMainMenu() {
+function startMainMenuPrompt() {
   const choices = [
     { name: "Use / activate a profile", value: "use" },
     { name: "Add a new profile", value: "add" },
     { name: "Delete a profile", value: "delete" },
     { name: "Rename a profile", value: "rename" },
     { name: "Launch Codex TUI for active profile", value: "launch" },
+    { name: "Invalidate usage cache & refresh", value: "refresh_usage" },
     { name: "Exit", value: "exit" },
   ];
 
-  const ans = await inquirer.prompt({
+  const prompt = inquirer.prompt({
     type: "list",
     name: "choice",
     message: chalk.cyan("What would you like to do?"),
@@ -253,7 +277,26 @@ async function promptMainMenu() {
     pageSize: choices.length,
   });
 
-  return ans.choice;
+  let closed = false;
+  const cancel = () => {
+    if (closed) return;
+    closed = true;
+    if (prompt.ui && typeof prompt.ui.close === "function") {
+      prompt.ui.close();
+    }
+  };
+
+  const promise = prompt
+    .then((ans) => {
+      closed = true;
+      return ans.choice;
+    })
+    .catch((err) => {
+      closed = true;
+      throw err;
+    });
+
+  return { promise, cancel };
 }
 
 async function chooseProfile(promptMessage) {
@@ -308,10 +351,15 @@ async function doAdd() {
   if (fs.existsSync(authFilePath)) {
     fs.rmSync(authFilePath, { force: true });
   }
+  usageManager.removeAccount(name);
   config.accounts[name] = { authFile: authFilePath };
   const prev = config.active;
   config.active = name;
   saveConfig(config);
+  usageManager.refreshAccounts([{ name, authFile: authFilePath }], {
+    force: true,
+    pruneMissing: false,
+  });
   return `${chalk.green(
     `Added '${name}' and set as active. (Previous: ${prev || "none"})`
   )} ${chalk.dim("Next: run login inside the context or launch Codex TUI.")}`;
@@ -350,6 +398,7 @@ async function doDelete() {
     const remaining = Object.keys(config.accounts);
     if (!config.active && remaining.length > 0) config.active = remaining[0];
     saveConfig(config);
+    usageManager.removeAccount(name);
     return chalk.green(`Deleted '${name}'.`);
   } catch (e) {
     return chalk.red(`Failed to delete '${name}': ${e.message}`);
@@ -380,6 +429,11 @@ async function doRename() {
   config.accounts[newName] = { authFile: newAuthPath };
   if (config.active === oldName) config.active = newName;
   saveConfig(config);
+  usageManager.renameAccount(oldName, newName);
+  usageManager.refreshAccounts([{ name: newName, authFile: newAuthPath }], {
+    force: true,
+    pruneMissing: false,
+  });
   return chalk.green(`Renamed '${oldName}' → '${newName}'.`);
 }
 
@@ -394,14 +448,87 @@ async function doLaunch() {
 
 async function mainTuiLoop() {
   let lastActionMessage = null;
+  let usageUpdateResolvers = [];
+  const unsubscribe = usageManager.onUpdate(() => {
+    const pendingResolvers = usageUpdateResolvers;
+    usageUpdateResolvers = [];
+    pendingResolvers.forEach((resolve) => {
+      try {
+        resolve();
+      } catch (e) {
+        console.warn(`Usage update listener failed: ${e.message}`);
+      }
+    });
+  });
+  const waitForUsageUpdate = () => {
+    let active = true;
+    let resolverRef = null;
+    const promise = new Promise((resolve) => {
+      resolverRef = () => {
+        if (!active) return;
+        active = false;
+        resolve();
+      };
+      usageUpdateResolvers.push(resolverRef);
+    });
+    const cancel = () => {
+      if (!active) return;
+      active = false;
+      usageUpdateResolvers = usageUpdateResolvers.filter(
+        (fn) => fn !== resolverRef
+      );
+    };
+    return { promise, cancel };
+  };
   while (true) {
     const latestConfig = loadConfig();
+    const accountsList = Object.entries(latestConfig.accounts).map(
+      ([name, account]) => ({
+        name,
+        authFile: account.authFile,
+      })
+    );
+    const usageByAccount = usageManager.getAllSummaries(
+      latestConfig.accounts
+    );
+
     renderDashboard(latestConfig, getAuthStatus, {
       lastAction: lastActionMessage,
+      usageByAccount,
     });
     lastActionMessage = null;
+    const usageUpdateWait = waitForUsageUpdate();
+    usageManager.refreshAccounts(accountsList, { pruneMissing: true });
 
-    const choice = await promptMainMenu();
+    const menuPrompt = startMainMenuPrompt();
+    const menuResultPromise = menuPrompt.promise
+      .then((choice) => ({ type: "choice", choice }))
+      .catch((error) => ({ type: "prompt_error", error }));
+    const raceResult = await Promise.race([
+      menuResultPromise,
+      usageUpdateWait.promise.then(() => ({ type: "usage_update" })),
+    ]);
+
+    if (raceResult.type === "usage_update") {
+      menuPrompt.cancel();
+      usageUpdateWait.cancel();
+      await menuResultPromise.catch(() => {});
+      // immediately re-render to display fresh usage data
+      continue;
+    }
+
+    if (raceResult.type === "prompt_error") {
+      usageUpdateWait.cancel();
+      if (raceResult.error && raceResult.error.isTtyError) {
+        unsubscribe();
+        throw raceResult.error;
+      }
+      // Prompt was cancelled (likely due to program exit); redraw and continue.
+      continue;
+    }
+
+    const choice = raceResult.choice;
+    usageUpdateWait.cancel();
     switch (choice) {
       case "add":
         lastActionMessage = await doAdd();
@@ -421,10 +548,21 @@ async function mainTuiLoop() {
           return; // launching codex replaces process
         }
         break;
+      case "refresh_usage":
+        usageManager.invalidateCache();
+        usageManager.refreshAccounts(accountsList, {
+          force: true,
+          pruneMissing: true,
+        });
+        lastActionMessage = chalk.green(
+          "Usage cache cleared. Refresh scheduled."
+        );
+        break;
       case "exit":
       default:
         clearScreen();
         console.log(chalk.dim("Goodbye."));
+        unsubscribe();
         return;
     }
 

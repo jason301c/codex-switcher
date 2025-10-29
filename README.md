@@ -7,6 +7,8 @@ Codex Switcher wraps the official `codex` CLI so you can hop between multiple au
 - Zero-config TUI (`ccx`) for adding, renaming, deleting, and activating Codex profiles.
 - Runs the upstream `codex` command with `CODEX_HOME` automatically set to the active profile.
 - Friendly status banners that show which account is live and whether it is authenticated.
+- Displays plan and rate-limit usage (when the stored `auth.json` includes `access_token` and `account_id`).
+- Caches usage data for 15 minutes across every profile, staggering API calls to stay polite, and offers a one-click cache invalidation in the TUI.
 - Safe defaults: stores its own state in `~/.codex_switcher/accounts.json`, swaps `auth.json` snapshots in and out of `~/.codex_switcher/shared_codex_home`, and never touches the original Codex files.
 
 ## Installation
@@ -23,6 +25,7 @@ Codex Switcher wraps the official `codex` CLI so you can hop between multiple au
 
 - `ccx` with no arguments launches the interactive dashboard. Add a profile, activate it, and optionally rename/delete as needed.
 - `ccx <anything>` forwards the arguments straight to the real `codex` binary while keeping the currently active profile's `CODEX_HOME`.
+- The dashboard shows cached usage for every profile; pick “Invalidate usage cache & refresh” from the menu to clear and refetch immediately.
 - All profile data lives in `~/.codex_accounts` as individual `auth.json` snapshots. Remove a profile in the UI and its saved auth file is deleted for you. The switcher's own metadata sits in `~/.codex_switcher/accounts.json`.
 
 ## Development
